@@ -27,6 +27,7 @@ class BuildType(Enum):
 class BuildInfo:
     build_type: BuildType
     future: asyncio.Future[Resource]
+    cancel_event: asyncio.Event
 
 
 class ResourceBuilder:
@@ -40,35 +41,68 @@ class ResourceBuilder:
             return self._build_tasks[resource].build_type
         return BuildType.NOT_RUNNING
 
-    async def build_resource(self, resource: str, build_type: BuildType = BuildType.FULL) -> Resource:
-        # If a build is already running, await its result
-        if resource in self._build_tasks:
-            self.report_progress(f"Build already in progress for: {resource}, awaiting result.")
-            return await self._build_tasks[resource].future
-
+    async def build_resource(self, resource: str, build_type: BuildType = BuildType.FULL, force_rebuild: bool = False) -> Resource:
         loop = asyncio.get_running_loop()
-        future: asyncio.Future[Resource] = loop.create_future()
-        self._build_tasks[resource] = BuildInfo(build_type, future)
-        try:
-            result = Resource(await loop.run_in_executor(None, self.long_running_build, resource))
-            result.timestamp = datetime.now()
-            future.set_result(result)
-            return result
-        except Exception as e:
-            future.set_exception(e)
-            raise
-        finally:
-            del self._build_tasks[resource]
+        # Always use the latest future for all requests
+        while True:
+            if resource in self._build_tasks:
+                build_info = self._build_tasks[resource]
+                if force_rebuild:
+                    self.report_progress(f"Force rebuild requested for: {resource}. Cancelling current build.")
+                    self._cancel_build(resource)
+                    # Immediately start the new build after cancellation
+                    cancel_event = asyncio.Event()
+                    build_info.cancel_event = cancel_event
+                    build_result = await loop.run_in_executor(None, ResourceBuilder._long_running_build, resource, cancel_event, self)
+                    if build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
+                        continue
+                    result = Resource(build_result)
+                    result.timestamp = datetime.now()
+                    build_info.future.set_result(result)
+                    del self._build_tasks[resource]
+                    return result
+                else:
+                    build_result = await build_info.future
+                    # If the build was cancelled, loop and await the new future
+                    if isinstance(build_result, Resource):
+                        return build_result
+                    elif build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
+                        continue
+                    else:
+                        raise Exception(f"Unexpected build result for {resource}: {build_result}")
+            else:
+                self.report_progress(f"Starting new build for: {resource} of type {build_type.name}")
+                future: asyncio.Future[Resource] = loop.create_future()
+                cancel_event = asyncio.Event()
+                self._build_tasks[resource] = BuildInfo(build_type, future, cancel_event)
+                build_result = await loop.run_in_executor(None, ResourceBuilder._long_running_build, resource, cancel_event, self)
+                if build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
+                    continue
+                result = Resource(build_result)
+                result.timestamp = datetime.now()
+                future.set_result(result)
+                del self._build_tasks[resource]
+                return result
 
-    def long_running_build(self, resource: str) -> str:
+    @staticmethod
+    def _long_running_build(resource: str, cancel_event, builder_instance) -> str:
         # simulate high CPU load
-        self.report_progress(f"Building resource: {resource}")
-        
+        builder_instance.report_progress(f"Building resource: {resource}")
         res = 0
         max = 10000 if resource == "A" else 7000
         for n in range(max):
+            if cancel_event.is_set():
+                builder_instance.report_progress(f"Build cancelled for: {resource}")
+                return "__CANCELLED__"
             res = n**n
         return resource + "_built"
+
+    def _cancel_build(self, resource: str) -> None:
+        """Cancel the build for a specific resource."""
+        build_info = self._build_tasks.get(resource)
+        if build_info and build_info.cancel_event:
+            build_info.cancel_event.set()
+            self.report_progress(f"Cancellation requested for resource: {resource}")
 
     def report_progress(self, str) -> None:
         with self._progress_lock:

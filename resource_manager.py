@@ -11,8 +11,6 @@ class ResourceManager:
         if not rebuild and resource in self.built_resources:
             return self.built_resources.get(resource)
 
-        if rebuild:
-            print(f"Rebuilding resource: {resource}")
-        built_res = await self.builder.build_resource(resource)
+        built_res = await self.builder.build_resource(resource, force_rebuild=rebuild)
         self.built_resources[resource] = built_res
         return self.built_resources.get(resource)
