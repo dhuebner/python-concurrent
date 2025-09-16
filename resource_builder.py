@@ -1,8 +1,8 @@
 import asyncio
-import threading
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import threading
 
 
 class Resource:
@@ -27,83 +27,79 @@ class BuildType(Enum):
 class BuildInfo:
     build_type: BuildType
     future: asyncio.Future[Resource]
-    cancel_event: asyncio.Event
 
 
 class ResourceBuilder:
 
     def __init__(self) -> None:
-        self._build_tasks: dict[str, BuildInfo] = {}
-        self._progress_lock = threading.Lock()
+        self._build_tasks = {}
+        self._progress_lock = threading.Lock()  # Replaced asyncio.Lock with threading.Lock
 
-    def build_state_of(self, resource: str) -> BuildType:
-        if resource in self._build_tasks:
-            return self._build_tasks[resource].build_type
+    def build_state_of(self, uri: str) -> BuildType:
+        if uri in self._build_tasks:
+            return self._build_tasks[uri].build_type
         return BuildType.NOT_RUNNING
 
-    async def build_resource(self, resource: str, build_type: BuildType = BuildType.FULL, force_rebuild: bool = False) -> Resource:
+    #
+    # If force_rebuild is True, any ongoing build for the same resource is ignored and a new build is started.
+    # The result of the new build is returned to waiters of the previous build.
+    #
+    async def build_resource(self, uri: str, build_type: BuildType = BuildType.FULL, force_rebuild: bool = False) -> Resource:
         loop = asyncio.get_running_loop()
-        # Always use the latest future for all requests
-        while True:
-            if resource in self._build_tasks:
-                build_info = self._build_tasks[resource]
-                if force_rebuild:
-                    self.report_progress(f"Force rebuild requested for: {resource}. Cancelling current build.")
-                    self._cancel_build(resource)
-                    # Immediately start the new build after cancellation
-                    cancel_event = asyncio.Event()
-                    build_info.cancel_event = cancel_event
-                    build_result = await loop.run_in_executor(None, ResourceBuilder._long_running_build, resource, cancel_event, self)
-                    if build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
-                        continue
-                    result = Resource(build_result)
-                    result.timestamp = datetime.now()
-                    build_info.future.set_result(result)
-                    del self._build_tasks[resource]
-                    return result
-                else:
-                    build_result = await build_info.future
-                    # If the build was cancelled, loop and await the new future
-                    if isinstance(build_result, Resource):
-                        return build_result
-                    elif build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
-                        continue
-                    else:
-                        raise Exception(f"Unexpected build result for {resource}: {build_result}")
-            else:
-                self.report_progress(f"Starting new build for: {resource} of type {build_type.name}")
-                future: asyncio.Future[Resource] = loop.create_future()
-                cancel_event = asyncio.Event()
-                self._build_tasks[resource] = BuildInfo(build_type, future, cancel_event)
-                build_result = await loop.run_in_executor(None, ResourceBuilder._long_running_build, resource, cancel_event, self)
-                if build_result is None or (isinstance(build_result, str) and build_result == "__CANCELLED__"):
-                    continue
-                result = Resource(build_result)
-                result.timestamp = datetime.now()
-                future.set_result(result)
-                del self._build_tasks[resource]
-                return result
+        if uri in self._build_tasks:
+            if force_rebuild:
+                return await self._force_rebuild(uri, build_type, loop)
+            return await self._await_existing_build(uri)
+        return await self._start_new_build(uri, build_type, loop)
+
+    async def _force_rebuild(self, uri: str, build_type: BuildType, loop) -> Resource:
+        self.report_progress(f"Force rebuild requested for: {uri}. Starting new build.")
+        future: asyncio.Future[Resource] = loop.create_future()
+        self._build_tasks[uri] = BuildInfo(build_type, future)
+        return await self._await_existing_build(uri)
+
+    async def _await_existing_build(self, uri: str) -> Resource:
+        build_info = self._build_tasks[uri]
+        build_result = await build_info.future
+        if isinstance(build_result, Resource):
+            return build_result
+        elif build_result is None:
+            self.report_progress(f"Stop and await rebuild of {uri}.")
+            return await self.build_resource(uri)
+        else:
+            raise Exception(f"Unexpected build result for {uri}: {build_result}")
+
+    async def _start_new_build(self, uri: str, build_type: BuildType, loop) -> Resource:
+        self.report_progress(f"Starting new build for: {uri} of type {build_type.name}")
+        future: asyncio.Future[Resource] = loop.create_future()
+        self._build_tasks[uri] = BuildInfo(build_type, future)
+        build_result = await loop.run_in_executor(None, ResourceBuilder._long_running_build, uri, self)
+        if build_result is None:
+            return await self.build_resource(uri, build_type)
+        result = Resource(build_result)
+        result.timestamp = datetime.now()
+        self._complete_build(uri, result)
+        return result
+
+    def _complete_build(self, uri: str, result: Resource) -> None:
+        if uri in self._build_tasks:
+            build_info = self._build_tasks[uri]
+            if build_info.future and not build_info.future.done():
+                build_info.future.set_result(result)
+            del self._build_tasks[uri]
+
+    def report_progress(self, message: str) -> None:
+        with self._progress_lock:
+            thread_name = threading.current_thread().name
+            print(f"[{thread_name}][{datetime.now().time()}] {message}")
 
     @staticmethod
-    def _long_running_build(resource: str, cancel_event, builder_instance) -> str:
+    def _long_running_build(uri: str, builder_instance: 'ResourceBuilder') -> str:
         # simulate high CPU load
-        builder_instance.report_progress(f"Building resource: {resource}")
+        builder_instance.report_progress(f"Building resource: {uri}")
         res = 0
-        max = 10000 if resource == "A" else 7000
+        max = 10000 if uri == "A" else 7000
         for n in range(max):
-            if cancel_event.is_set():
-                builder_instance.report_progress(f"Build cancelled for: {resource}")
-                return "__CANCELLED__"
             res = n**n
-        return resource + "_built"
-
-    def _cancel_build(self, resource: str) -> None:
-        """Cancel the build for a specific resource."""
-        build_info = self._build_tasks.get(resource)
-        if build_info and build_info.cancel_event:
-            build_info.cancel_event.set()
-            self.report_progress(f"Cancellation requested for resource: {resource}")
-
-    def report_progress(self, str) -> None:
-        with self._progress_lock:
-            print(f"[{threading.current_thread().name}][{datetime.now().time()}] {str}")
+        builder_instance.report_progress(f"Finished building resource: {uri}")
+        return uri + "_built"
