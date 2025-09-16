@@ -1,4 +1,5 @@
 import asyncio
+import resource
 
 from resource_manager import ResourceManager
 
@@ -11,21 +12,22 @@ async def print_ticks(stop_event: asyncio.Event) -> None:
 
 async def execute() -> None:
     manager = ResourceManager()
-    resources = ["A", "B", "A", "C"]
+    resources: list[tuple[str, bool]] = [("A", False), ("B", False), ("A", False), ("C", False),  ("B", True)]
     stop_event = asyncio.Event()
 
     async def build_all():
         # Request all resources in parallel
-        tasks = [manager.get_or_add_resource(resource) for resource in resources]
+        tasks = [manager.get_or_add_resource(resource, rebuild) for resource, rebuild in resources]
         for coro in asyncio.as_completed(tasks):
             built_res = await coro
-            # Find which resource this result belongs to
-            # (Assumes built_res is unique or you can map it back)
             print(f"Got resource: {built_res}")
         stop_event.set()
-        print(f"Built resources: {manager.built_resources}")
 
     await asyncio.gather(print_ticks(stop_event), build_all())
+    
+    print("Built resources:")
+    for name, resource in manager.built_resources.items():
+        print(f"\t{name}: {resource}")
 
 
 if __name__ == "__main__":
