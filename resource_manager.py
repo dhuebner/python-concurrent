@@ -14,13 +14,16 @@ class ResourceManager:
         return cls._instance
 
     def __init__(self) -> None:
+        if hasattr(self, "_initialized"):
+            return
         self.builder = ResourceBuilder()
         self.built_resources: dict[str, Resource] = {}
+        self._initialized = True
 
-    async def get_or_add_resource(self, resource: str, rebuild: bool = False) -> Resource | None:
-        if not rebuild and resource in self.built_resources:
-            return self.built_resources.get(resource)
+    async def get_or_add_resource(self, uri: str, rebuild: bool = False) -> Resource | None:
+        if not rebuild and uri in self.built_resources:
+            return self.built_resources[uri]
 
-        built_res = await self.builder.build_resource(resource, BuilderOptions(force_rebuild=rebuild))
-        self.built_resources[resource] = built_res
-        return self.built_resources.get(resource)
+        built_res = await self.builder.build_resource(uri, BuilderOptions(force_rebuild=rebuild))
+        self.built_resources[uri] = built_res
+        return built_res

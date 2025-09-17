@@ -46,6 +46,10 @@ class BuilderOptions:
     force_rebuild: bool = False
 
 
+class CancelledBuildException(Exception):
+    pass
+
+
 class ResourceBuilder:
 
     _instance: Optional["ResourceBuilder"] = None
@@ -75,6 +79,30 @@ class ResourceBuilder:
         """Returns a dict mapping resource names to their truncated build IDs."""
         with self._progress_lock:
             return {resource: info.build_id[-4:] for resource, info in self._build_tasks.items()}  # Locked snapshot
+
+    def cancel_running(self, uri: str) -> bool:
+        """Attempts to cancel the running build for the given URI.
+
+        Returns True if a running build was found and marked for cancellation, False otherwise.
+        Waiters will receive a CancelledBuildException.
+        The build thread will stop at the next progress checkpoint.
+        """
+        with self._progress_lock:
+            if uri not in self._build_tasks:
+                return False
+            build_info = self._build_tasks[uri]
+            if build_info.future.done():
+                return False
+
+            build_info.is_superseded = True
+            self._superseded_ids.add(build_info.build_id)
+
+            # Immediately notify waiters
+            if not build_info.future.done():
+                build_info.future.set_exception(CancelledBuildException(f"Build for {uri} cancelled"))
+
+            # Do NOT delete from _build_tasks here - let _run_build cleanup handle it
+            return True
 
     #
     # If force_rebuild is True, any ongoing build for the same resource is effectively cancelled and a new build is started.
@@ -228,7 +256,3 @@ class ResourceBuilder:
         ResourceBuilder.report_progress(uri, f"Finished building resource: {uri}", 100)
         origin.content = uri + "_built"
         return
-
-
-class CancelledBuildException(Exception):
-    pass

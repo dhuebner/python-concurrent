@@ -35,6 +35,10 @@ async def execute() -> None:
         # Wait until B's build has actually started
         await b_started_event.wait()
         await asyncio.sleep(2)
+        
+        # Test canceling a build
+        print(f"c build canceled? {ResourceBuilder().cancel_running('C')}")
+
         task_a_2 = asyncio.create_task(manager.get_or_add_resource("A", False))
         task_b_rebuild = asyncio.create_task(manager.get_or_add_resource("B", True))
 
@@ -50,7 +54,7 @@ async def execute() -> None:
     await asyncio.gather(print_ticks(stop_event), build_all())
 
     print("Built resources:")
-    for name, resource in manager.built_resources.items():
+    for name, resource in ResourceManager().built_resources.items():
         print(f"\t{name}: {resource}")
 
 
