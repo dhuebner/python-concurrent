@@ -1,7 +1,7 @@
 import threading
 from typing import Any, Optional
-from resource_builder import Resource, ResourceBuilder, BuilderOptions
-
+from resource_builder import ResourceBuilder, BuilderOptions
+from resource_types import Resource
 
 class ResourceManager:
     _instance: Optional["ResourceManager"] = None

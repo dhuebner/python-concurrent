@@ -20,10 +20,10 @@ async def execute() -> None:
     # Patch ResourceBuilder to signal when B build starts
     orig_report_progress = ResourceBuilder.report_progress
 
-    def patched_report_progress(message: str) -> None:
+    def patched_report_progress(uri: str, message: str, progress: int) -> None:
         if message.startswith("Building resource: B"):
             b_started_event.set()
-        orig_report_progress(message)
+        orig_report_progress(uri, message, progress)
 
     ResourceBuilder.report_progress = patched_report_progress  # Class-level patch for static method
 
