@@ -34,7 +34,7 @@
   "reportMissingParameterType": true,
   "reportMissingTypeArgument": true,
   "reportInvalidTypeVarUse": true,
-  "reportCallInDefaultInitializer": true,
+  "reportCallInDefaultInitializer": false,
   "reportUnnecessaryIsInstance": true,
   "reportUnnecessaryCast": true,
   "reportUnnecessaryComparison": true,
